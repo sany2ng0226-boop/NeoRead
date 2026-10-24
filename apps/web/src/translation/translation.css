@@ -31,6 +31,56 @@
   min-width: 0;
   min-height: 0;
 }
+/* Paginated EPUB: a quiet running head, page count and two page turns. */
+.epub-page-header,
+.epub-page-footer {
+  position: absolute;
+  left: 50%;
+  z-index: 2;
+  max-width: 60%;
+  transform: translateX(-50%);
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.epub-page-header {
+  top: 18px;
+}
+.epub-page-footer {
+  bottom: 16px;
+  display: flex;
+  gap: 16px;
+}
+.epub-page-turn {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  color: var(--muted-foreground);
+  opacity: 0.3;
+  transform: translateY(-50%);
+  transition: opacity 160ms ease;
+  -webkit-app-region: no-drag;
+}
+.epub-page-turn[data-side="previous"] {
+  left: 4px;
+}
+.epub-page-turn[data-side="next"] {
+  right: 4px;
+}
+.translation-source:hover .epub-page-turn {
+  opacity: 0.6;
+}
+.translation-source .epub-page-turn:is(:hover, :focus-visible) {
+  opacity: 1;
+}
+.translation-source .epub-page-turn:disabled {
+  opacity: 0;
+}
 .translation-pane-content {
   display: flex;
   min-width: 0;

@@ -67,7 +67,12 @@ export async function refreshAIConfig() {
 }
 export const primaryLibraryMode = (
   preferences: LibraryPreferences,
-): LibraryMode => (preferences.primaryMode === "books" ? "books" : "papers");
+): LibraryMode =>
+  preferences.primaryMode === "books" || preferences.primaryMode === "papers"
+    ? preferences.primaryMode
+    : preferences.mode === "books"
+      ? "books"
+      : "papers";
 export const libraryMode = (preferences: LibraryPreferences): LibraryMode =>
   preferences.mode === "books" || preferences.mode === "papers"
     ? preferences.mode

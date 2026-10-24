@@ -63,11 +63,7 @@ import {
 } from "@reader/ui/components/tabs";
 import { HighlightColorsEditor } from "./HighlightColorsEditor";
 import { ProxySettings } from "./ProxySettings";
-import {
-  primaryLibraryMode,
-  updateLibraryPreferences,
-  useReaderStore,
-} from "./store";
+import { updateLibraryPreferences, useReaderStore } from "./store";
 import { libraryModes } from "./LibraryModeSwitcher";
 import { Checkbox } from "@reader/ui/components/checkbox";
 import { toast } from "sonner";
@@ -704,9 +700,14 @@ export function Settings({
                 主要模式
               </h3>
               <Select
-                value={primaryLibraryMode(libraryPreferences)}
+                value={libraryPreferences.primaryMode ?? "last"}
                 onValueChange={(value) => {
-                  if (value !== "papers" && value !== "books") return;
+                  if (
+                    value !== "papers" &&
+                    value !== "books" &&
+                    value !== "last"
+                  )
+                    return;
                   void updateLibraryPreferences({ primaryMode: value }).catch(
                     (error) => toast.error((error as Error).message),
                   );
@@ -717,10 +718,14 @@ export function Settings({
                   className="w-48"
                 >
                   <SelectValue>
-                    {libraryModes[primaryLibraryMode(libraryPreferences)].label}
+                    {libraryPreferences.primaryMode === "papers" ||
+                    libraryPreferences.primaryMode === "books"
+                      ? libraryModes[libraryPreferences.primaryMode].label
+                      : "上次使用的书库"}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="last">上次使用的书库</SelectItem>
                   {(Object.keys(libraryModes) as LibraryMode[]).map((mode) => (
                     <SelectItem key={mode} value={mode}>
                       {libraryModes[mode].label}

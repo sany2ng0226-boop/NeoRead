@@ -29,6 +29,8 @@ import {
   blockRange,
   resolveEPUBLocation,
 } from "./epub-web-location";
+import { chapterLanguage } from "./epub-language";
+import { readingFont } from "../appearance";
 import "./epub-web.css";
 
 let sequence = 0;
@@ -302,6 +304,12 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       chapter.node.replaceChildren(template.content);
       chapter.node.style.height = "";
       chapter.node.removeAttribute("aria-busy");
+      // Hyphenation and CJK glyphs need a language; books rarely declare one
+      // on the elements that survive sanitizing.
+      const language = chapterLanguage(
+        chapter.info.blocks.map((block) => block.text).join(" "),
+      );
+      if (language) chapter.node.lang = language;
       chapter.loaded = true;
       this.preserveAnchor();
       this.rememberAnchor();
@@ -945,7 +953,7 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     }[this.theme.mode];
     Object.assign(this.container.style, {
       fontSize: `${this.theme.fontSize}rem`,
-      fontFamily: this.theme.fontFamily,
+      fontFamily: readingFont(this.theme.fontFamily),
       lineHeight: String(this.theme.lineHeight),
       backgroundColor: palette[0],
       color: palette[1],

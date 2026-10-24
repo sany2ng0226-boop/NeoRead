@@ -3,8 +3,18 @@ import { forwardReaderShortcut } from "../shortcuts/shortcuts";
 import {
   installEPUBPaging,
   installEPUBScroll,
+  pageTurnHandlers,
   type EPUBScrollState,
 } from "./epub-scroll";
+import {
+  firstUnpassed,
+  framePage,
+  ownsPageKey,
+  textRangeIn,
+} from "./epub-pages";
+import { epubOffsets } from "../translation/epub-links";
+import { readingFont } from "../appearance";
+import { openExternalLink } from "../reading-links";
 import { EPUBTransition } from "./epub-transition";
 import { toast } from "sonner";
 import { selectionAnchor, isSelectionToolbar } from "./selection-anchor";
@@ -13,11 +23,13 @@ import {
   sliceEPUBRange,
   resolveEPUBRange,
   searchEPUBLocators,
+  textRangeAt,
 } from "./selection-locator";
 import { installScrollbars } from "../scrollbars";
 import {
   EpubNavigator,
   EpubPreferences,
+  TextAlignment,
   DecorationLayout,
   DecorationWidth,
   type Decoration,
@@ -46,6 +58,7 @@ import type {
   SearchResult,
   TOCItem,
 } from "@reader/core";
+import { defaultTheme } from "@reader/core";
 import { selectSentence, sentenceRoot } from "./sentence-selection";
 export class EPUBReaderAdapter implements ReaderAdapter {
   private navigator?: EpubNavigator;
@@ -78,11 +91,98 @@ export class EPUBReaderAdapter implements ReaderAdapter {
   private annotations: Annotation[] = [];
   private readingBlocks: EPUBReadingBlock[] = [];
   private readingFrame = 0;
+  private pageFrame = 0;
   private lastReadingBlock = "";
+  // Scrolls until preferTheme or setTheme chooses pages.
+  private theme: ReaderTheme = { ...defaultTheme, epubFlow: "scroll" };
   setEPUBBlocks(blocks: EPUBReadingBlock[]) {
+    // The reader view may report its still-empty list after open fetched one.
+    if (!blocks.length && this.readingBlocks.length) return;
     this.readingBlocks = blocks;
     this.reportReadingBlock();
   }
+  private frameWindow() {
+    return this.navigator?._cframes[0]?.iframe.contentWindow ?? undefined;
+  }
+  /**
+   * The first block and character on screen, in the block form the scrolling
+   * reader restores; Readium's own locator stays the primary position here.
+   */
+  private visiblePosition(): Pick<EPUBLocation, "blockId" | "start" | "end"> {
+    const wnd = this.frameWindow();
+    if (!wnd?.document.body) return {};
+    const href = this.location.href.split("#")[0];
+    const blocks = this.readingBlocks.filter(
+      (b) => b.location.href === href && !b.image && b.text,
+    );
+    const passed = (rect: DOMRect) =>
+      this.paginated ? rect.right <= 1 : rect.bottom <= 1;
+    const ranges = new Map<number, Range | undefined>();
+    const rangeOf = (index: number) => {
+      if (!ranges.has(index)) {
+        let range: Range | undefined;
+        try {
+          range = resolveEPUBRange(
+            wnd.document,
+            this.toLocator(blocks[index].location),
+          );
+        } catch {
+          /* A block whose locator does not resolve is skipped. */
+        }
+        ranges.set(index, range);
+      }
+      return ranges.get(index);
+    };
+    const index = firstUnpassed(blocks.length, (i) => {
+      const rects = Array.from(rangeOf(i)?.getClientRects() ?? []).filter(
+        (rect) => rect.width || rect.height,
+      );
+      return rects.length > 0 && rects.every(passed);
+    });
+    const block = blocks[index],
+      range = block && rangeOf(index);
+    if (!block || !range) return {};
+    const offset = firstUnpassed(block.text.length, (i) => {
+      const rect = textRangeIn(range, i)?.getBoundingClientRect();
+      return !!rect && passed(rect);
+    });
+    return { blockId: block.id, start: offset, end: offset };
+  }
+  /** Chapter title and screen count for the running head and page footer. */
+  private reportPage = () => {
+    cancelAnimationFrame(this.pageFrame);
+    this.pageFrame = requestAnimationFrame(() => {
+      if (this.disposed) return;
+      const wnd = this.frameWindow();
+      const screen = this.paginated && wnd ? framePage(wnd) : undefined;
+      if (!screen || !this.publication) {
+        this.events.pagination?.(null);
+        return;
+      }
+      const href = this.location.href.split("#")[0];
+      const order = this.publication.readingOrder.items.map(
+        (l) => l.href.split("#")[0],
+      );
+      const index = order.indexOf(href);
+      const title = (items: Link[]): string | undefined => {
+        for (const link of items) {
+          if (link.href.split("#")[0] === href && link.title) return link.title;
+          const child = title(link.children?.items ?? []);
+          if (child) return child;
+        }
+      };
+      this.events.pagination?.({
+        chapter:
+          title(this.publication.toc?.items ?? []) ||
+          this.publication.readingOrder.items[index]?.title ||
+          "",
+        page: screen.page,
+        pages: screen.pages,
+        first: index <= 0 && screen.page <= 1,
+        last: index === order.length - 1 && screen.page >= screen.pages,
+      });
+    });
+  };
   private reportReadingBlock = () => {
     cancelAnimationFrame(this.readingFrame);
     this.readingFrame = requestAnimationFrame(() => {
@@ -185,13 +285,68 @@ export class EPUBReaderAdapter implements ReaderAdapter {
   ) {
     document.addEventListener("pointerdown", this.onOutsidePointer);
     document.addEventListener("keydown", this.onKeyDown);
-    this.resize = new ResizeObserver(this.clearSelection);
+    document.addEventListener("keydown", this.onPageKey);
+    this.resize = new ResizeObserver(this.onResize);
     this.resize.observe(container);
     this.transition = new EPUBTransition(container);
   }
-  /** Read before open so the first layout already uses the saved flow. */
+  private onResize = () => {
+    this.clearSelection();
+    this.reportPage();
+  };
+  // Keys inside the book frame turn pages there; these cover the rest of the
+  // reader, so a click on the toolbar does not stop the arrow keys.
+  private pageKeys = pageTurnHandlers(
+    this.scrollState,
+    () => this.paginated && this.loaded && !this.disposed,
+    (direction) => (direction > 0 ? this.next() : this.previous()),
+    (reason) =>
+      toast.error(reason instanceof Error ? reason.message : "无法翻页"),
+    () => "",
+  );
+  private onPageKey = (event: KeyboardEvent) => {
+    const scope =
+      this.container.closest(".translation-source") ?? this.container;
+    if (this.paginated && ownsPageKey(event, scope)) this.pageKeys.key(event);
+  };
+  /** Read before open so the first layout already uses the saved flow and type. */
   preferTheme(theme: ReaderTheme) {
+    this.theme = theme;
     this.paginated = theme.epubFlow === "paginated";
+  }
+  private preferences(theme: ReaderTheme) {
+    const paginated = theme.epubFlow === "paginated";
+    const [backgroundColor, textColor] = {
+      light: ["#ffffff", "#27272a"],
+      sepia: ["#f7f6f2", "#1f1e1d"],
+      // Graphite, or the neutral dark page for pure black.
+      dark:
+        theme.pdfDarkContrast === "high"
+          ? ["#202020", "#dededb"]
+          : ["#2f2c2f", "#e4dfda"],
+    }[theme.mode];
+    const cjk = this.publication?.metadata.languages?.some((language) =>
+      /^(zh|ja|ko)(-|$)/i.test(language),
+    );
+    return new EpubPreferences({
+      minimalLineLength: cjk ? 20 : 40,
+      optimalLineLength: cjk ? 30 : 65,
+      maximalLineLength: cjk ? 36 : 80,
+      fontSize: theme.fontSize,
+      fontFamily: readingFont(theme.fontFamily),
+      lineHeight: theme.lineHeight,
+      pageGutter: theme.margin,
+      scrollPaddingLeft: theme.margin,
+      scrollPaddingRight: theme.margin,
+      scroll: !paginated,
+      backgroundColor,
+      textColor,
+      // Two facing pages when both columns keep Readium's minimal line
+      // length; Readium falls back to one page in narrower windows.
+      columnCount: paginated ? 2 : 1,
+      textAlign: TextAlignment.justify,
+      hyphens: true,
+    });
   }
   private clearState = () => {
     this.selectedWindow = undefined;
@@ -347,6 +502,15 @@ export class EPUBReaderAdapter implements ReaderAdapter {
         manager,
       );
     };
+    // Footnotes and cross references move the reader; remember where from,
+    // so the toolbar can offer the way back.
+    const followLink = (event: MouseEvent) => {
+      const href = (event.target as Element | null)
+        ?.closest?.("a[href]")
+        ?.getAttribute("href");
+      if (href && !/^[a-z]+:/i.test(href))
+        this.events.internalLink?.(this.location);
+    };
     const unload = () => {
       this.clearSelection();
       if (this.selectedWindow === wnd) this.clearState();
@@ -366,6 +530,7 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       doc.removeEventListener("mouseup", released);
       doc.removeEventListener("keydown", key);
       doc.removeEventListener("keyup", keyReleased);
+      doc.removeEventListener("click", followLink, true);
       doc.removeEventListener("scroll", this.clearSelection, true);
       doc.removeEventListener("scroll", this.reportReadingBlock, true);
       for (const event of ["pointerdown", "wheel", "keydown"])
@@ -381,6 +546,7 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     doc.addEventListener("mouseup", released);
     doc.addEventListener("keydown", key);
     doc.addEventListener("keyup", keyReleased);
+    doc.addEventListener("click", followLink, true);
     doc.addEventListener("scroll", this.clearSelection, true);
     doc.addEventListener("scroll", this.reportReadingBlock, true);
     for (const event of ["pointerdown", "wheel", "keydown"])
@@ -452,7 +618,50 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     }
     return pending;
   }
+  /**
+   * Positions and notes saved while scrolling name a block and UTF-16 offsets
+   * into its text. Each block records its body-text range in the original
+   * XHTML, so the same characters become an exact Readium locator.
+   */
+  private async blockLocator(
+    location: EPUBLocation,
+  ): Promise<Locator | undefined> {
+    if (location.locator || !location.blockId) return;
+    const href = location.href.split("#")[0];
+    const first = this.readingBlocks.find(
+      (b) => b.id === location.blockId && b.location.href === href,
+    );
+    const last = location.endBlockId
+      ? this.readingBlocks.find(
+          (b) => b.id === location.endBlockId && b.location.href === href,
+        )
+      : first;
+    const from = first && epubOffsets(first.location);
+    const to = last && epubOffsets(last.location);
+    if (!first || !last || !from || !to) return;
+    let start = from.start + (location.start ?? 0);
+    let end = to.start + (location.end ?? last.text.length);
+    // A reading position is one point; Readium navigates to a character.
+    if (end <= start) {
+      end = Math.min(start + 1, to.end);
+      start = Math.max(from.start, end - 1);
+    }
+    if (start < from.start || end > to.end || end <= start) return;
+    const doc = await this.resourceDocument(href);
+    const range = textRangeAt(doc, start, end);
+    if (!range) return;
+    const quote = location.quote?.replace(/\s+/g, " ").trim();
+    if (
+      quote &&
+      location.end !== location.start &&
+      range.toString().replace(/\s+/g, " ").trim() !== quote
+    )
+      return;
+    return selectionLocator(this.toLocator({ type: "epub", href }), range);
+  }
   private async exactLocator(location: EPUBLocation): Promise<Locator> {
+    const converted = await this.blockLocator(location);
+    if (converted) return converted;
     const locator = this.toLocator(location);
     if (!locator.text?.highlight) return locator;
     const doc = await this.resourceDocument(locator.href);
@@ -521,7 +730,9 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       positionChanged: (locator) => {
         this.clearSelection();
         this.location = this.fromLocator(locator);
+        Object.assign(this.location, this.visiblePosition());
         this.reportReadingBlock();
+        this.reportPage();
         const index = this.publication!.readingOrder.items.findIndex(
           (l) => l.href === locator.href,
         );
@@ -540,7 +751,14 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       miscPointer: () => {},
       scroll: this.clearSelection,
       customEvent: () => {},
-      handleLocator: (locator) => /^[a-z]+:/i.test(locator.href),
+      // Readium hands over web and mail links; they open outside the reader.
+      handleLocator: (locator) => {
+        if (/^(https?:|mailto:)/i.test(locator.href)) {
+          openExternalLink(locator.href);
+          return true;
+        }
+        return /^[a-z]+:/i.test(locator.href);
+      },
       textSelected: (selection) => {
         if (this.disposed) return;
         if (!selection.text.trim()) return this.clearState();
@@ -588,9 +806,23 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       contextMenu: () => {},
       peripheral: () => {},
     };
+    try {
+      // Paragraph ranges let positions and notes saved while scrolling open
+      // at the same characters here.
+      this.setEPUBBlocks(await api.epubBlocks(doc.id));
+    } catch {
+      /* Without them, saved chapter progressions still open the chapter. */
+    }
+    if (this.disposed) return;
     let initial =
       doc.progress?.type === "epub" ? this.toLocator(doc.progress) : undefined;
-    if (
+    if (doc.progress?.type === "epub" && !doc.progress.locator) {
+      try {
+        initial = (await this.blockLocator(doc.progress)) ?? initial;
+      } catch {
+        /* Fall back to the chapter progression. */
+      }
+    } else if (
       doc.progress?.type === "epub" &&
       initial?.locations.otherLocations?.has("sourceSlice")
     ) {
@@ -607,12 +839,7 @@ export class EPUBReaderAdapter implements ReaderAdapter {
       positions,
       initial,
       {
-        preferences: {
-          fontSize: 1.15,
-          lineHeight: 1.8,
-          columnCount: 1,
-          scroll: !this.paginated,
-        },
+        preferences: this.preferences(this.theme),
         defaults: {},
       },
     );
@@ -797,30 +1024,10 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     const paginated = theme.epubFlow === "paginated";
     const flowChanged = paginated !== this.paginated;
     this.paginated = paginated;
-    const palette = {
-      light: ["#ffffff", "#27272a"],
-      sepia: ["#f7f6f2", "#1f1e1d"],
-      // Graphite, or the neutral dark page for pure black.
-      dark:
-        theme.pdfDarkContrast === "high"
-          ? ["#202020", "#dededb"]
-          : ["#2f2c2f", "#e4dfda"],
-    }[theme.mode];
+    this.theme = theme;
     const submit = async () => {
-      await this.navigator?.submitPreferences(
-        new EpubPreferences({
-          fontSize: theme.fontSize,
-          fontFamily: theme.fontFamily,
-          lineHeight: theme.lineHeight,
-          pageGutter: theme.margin,
-          scrollPaddingLeft: theme.margin,
-          scrollPaddingRight: theme.margin,
-          scroll: !paginated,
-          backgroundColor: palette[0],
-          textColor: palette[1],
-          columnCount: 1,
-        }),
-      );
+      await this.navigator?.submitPreferences(this.preferences(theme));
+      this.reportPage();
     };
     // Switching between pages and scrolling relayouts the whole chapter.
     await (flowChanged && this.loaded
@@ -846,9 +1053,12 @@ export class EPUBReaderAdapter implements ReaderAdapter {
     this.resourceDocuments.clear();
     this.highlightRevision++;
     cancelAnimationFrame(this.readingFrame);
+    cancelAnimationFrame(this.pageFrame);
+    this.pageKeys.dispose();
     this.resize.disconnect();
     document.removeEventListener("pointerdown", this.onOutsidePointer);
     document.removeEventListener("keydown", this.onKeyDown);
+    document.removeEventListener("keydown", this.onPageKey);
     for (const cleanup of this.frameCleanups.values()) cleanup();
     this.frameCleanups.clear();
     this.clearSelection();

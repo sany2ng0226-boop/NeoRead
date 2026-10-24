@@ -56,6 +56,9 @@ function rangeAt(doc: Document, start: number, end: number): Range | undefined {
   }
 }
 
+/** A range over body text offsets, as stored in `textRange` locations. */
+export const textRangeAt = rangeAt;
+
 export function selectionLocator(
   base: Locator,
   selected: Range,

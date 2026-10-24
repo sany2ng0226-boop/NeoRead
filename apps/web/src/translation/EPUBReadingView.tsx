@@ -2,17 +2,20 @@ import { annotationsInRects, sentenceRectsAtPoint } from "./annotation-hover";
 import { useTranslations } from "./useTranslations";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentProps,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type {
   DocumentLocation,
   EPUBLocation,
   EPUBReadingBlock,
   ReaderAdapter,
+  ReaderPagination,
   ReaderSelection,
   Processing,
 } from "@reader/core";
@@ -53,6 +56,14 @@ export function EPUBReadingView({
 }) {
   const [mode, setMode] = useState<Mode>("source");
   const [swapped, setSwapped] = useState(false);
+  const [pagination, setPagination] = useState<ReaderPagination | null>(null);
+  const [percent, setPercent] = useState(doc.percentage ?? 0);
+  // Side-by-side reading follows paragraphs vertically, so the source scrolls
+  // there; pages return with source-only reading.
+  const sourceTheme = useMemo(
+    () => (mode === "source" ? theme : { ...theme, epubFlow: "scroll" as const }),
+    [theme, mode],
+  );
   const [blocks, setBlocks] = useState<EPUBReadingBlock[]>([]);
   const { translations, error: streamError } = useTranslations(doc.id);
   const [chapter, setChapter] = useState(
@@ -308,6 +319,14 @@ export function EPUBReadingView({
   };
   const changeMode = (value: Mode) => {
     clear();
+    if (
+      value !== "source" &&
+      live.current.mode === "source" &&
+      theme.epubFlow === "paginated"
+    )
+      toast.info("对照阅读时原文改为上下滚动，回到仅原文后恢复翻页", {
+        id: "epub-parallel-scroll",
+      });
     setMode(value);
     side.current = value === "translation" ? "translation" : "source";
     const target = position.current;
@@ -352,7 +371,7 @@ export function EPUBReadingView({
           <div className="translation-source">
             <ReaderView
               document={doc}
-              theme={theme}
+              theme={sourceTheme}
               annotations={annotations}
               onReady={(adapter, toc) => {
                 engine.current = adapter;
@@ -414,8 +433,10 @@ export function EPUBReadingView({
                     return;
                   position.current = location;
                   setChapter(location.href);
+                  setPercent(percent);
                   live.current.events.location(location, percent);
                 },
+                pagination: setPagination,
                 epubReadingAnchor: (id) => {
                   if (
                     side.current === "source" &&
@@ -443,6 +464,49 @@ export function EPUBReadingView({
                 },
               }}
             />
+            {pagination && mode === "source" && (
+              <>
+                <div className="epub-page-header" aria-hidden="true">
+                  {pagination.chapter}
+                </div>
+                <div className="epub-page-footer">
+                  <span
+                    aria-label={`本章第 ${pagination.page} 页，共 ${pagination.pages} 页`}
+                  >
+                    {pagination.page} / {pagination.pages}
+                  </span>
+                  <span aria-label={`全书已读 ${Math.round(percent * 100)}%`}>
+                    {Math.round(percent * 100)}%
+                  </span>
+                </div>
+                <Button
+                  className="epub-page-turn"
+                  data-side="previous"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="上一页"
+                  disabled={pagination.first}
+                  onClick={() =>
+                    void step(-1).catch((e) => toast.error(e.message))
+                  }
+                >
+                  <ChevronLeft />
+                </Button>
+                <Button
+                  className="epub-page-turn"
+                  data-side="next"
+                  variant="ghost"
+                  size="icon"
+                  aria-label="下一页"
+                  disabled={pagination.last}
+                  onClick={() =>
+                    void step(1).catch((e) => toast.error(e.message))
+                  }
+                >
+                  <ChevronRight />
+                </Button>
+              </>
+            )}
           </div>
         }
         translation={

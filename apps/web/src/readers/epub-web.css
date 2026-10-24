@@ -8,13 +8,21 @@
 .epub-web-chapter {
   box-sizing: border-box;
   margin: 0 auto;
-  max-width: 54rem;
+  /* About 34 characters per line at any type size, like a printed page. */
+  max-width: calc(34em + 2 * var(--epub-margin, 32px));
   padding: 1.5rem var(--epub-margin, 32px);
-  overflow-wrap: anywhere;
+  /* Break long words and URLs only when they cannot fit; hyphenate where
+     the chapter language is known. */
+  overflow-wrap: break-word;
+  hyphens: auto;
+  font-kerning: normal;
   display: flow-root;
 }
 .epub-web-chapter p {
-  margin: 0 0 1em;
+  margin: 0 0 0.9em;
+  text-align: justify;
+  orphans: 2;
+  widows: 2;
 }
 .epub-web-chapter h1,
 .epub-web-chapter h2,
@@ -25,6 +33,10 @@
   font-weight: 600;
   line-height: 1.4;
   margin: 1.5em 0 0.8em;
+  text-align: start;
+  text-wrap: balance;
+  hyphens: manual;
+  break-after: avoid;
 }
 .epub-web-chapter h1 {
   font-size: 1.8em;
@@ -85,6 +97,8 @@
 .epub-web-chapter a {
   color: inherit;
   text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 0.18em;
   cursor: pointer;
 }
 .epub-web-chapter hr {

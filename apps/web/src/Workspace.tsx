@@ -124,7 +124,7 @@ import { NotesPanel } from "./NotesPanel";
 import { ExportDocumentDialog } from "./ExportDocumentDialog";
 import { EPUBReadingView } from "./translation/EPUBReadingView";
 import { PDFReadingView } from "./translation/PDFReadingView";
-import { useReaderStore } from "./store";
+import { useReaderStore, updateLibraryPreferences } from "./store";
 import { scheduleProgress, flushProgress } from "./progress";
 import { Slider } from "@reader/ui/components/slider";
 import { TranslationFontControls } from "./TranslationFontControls";
@@ -382,12 +382,16 @@ export function Workspace({
     id: string;
   }>({ documentId: doc.id, id: "" });
   const [sessionError, setSessionError] = useState("");
+  const savedSessions = useReaderStore(
+    (s) => s.libraryPreferences.chatSessions,
+  );
   const currentDocument = useRef(doc.id);
   currentDocument.current = doc.id;
   const sessions =
     sessionCatalog.documentId === doc.id ? sessionCatalog.items : [];
   let preferred =
     selectedSession.documentId === doc.id ? selectedSession.id : "";
+  if (!preferred) preferred = savedSessions?.[doc.id] ?? "";
   if (!preferred) {
     try {
       preferred = localStorage.getItem(`reader.chat-session.${doc.id}`) || "";
@@ -410,6 +414,12 @@ export function Workspace({
   }, [doc.id]);
   const selectSession = (id: string) => {
     setSelectedSession({ documentId: doc.id, id });
+    void updateLibraryPreferences({
+      chatSessions: {
+        ...useReaderStore.getState().libraryPreferences.chatSessions,
+        [doc.id]: id,
+      },
+    }).catch((error) => toast.error((error as Error).message));
     try {
       localStorage.setItem(`reader.chat-session.${doc.id}`, id);
     } catch {}
@@ -1101,6 +1111,18 @@ export function Workspace({
                 </div>
                 {doc.type === "epub" ? (
                   <>
+                    <Tabs
+                      value={theme.epubFlow ?? "paginated"}
+                      onValueChange={(value) => {
+                        if (value === "paginated" || value === "scroll")
+                          setTheme({ epubFlow: value });
+                      }}
+                    >
+                      <TabsList aria-label="阅读方式" className="w-full">
+                        <TabsTrigger value="paginated">左右翻页</TabsTrigger>
+                        <TabsTrigger value="scroll">上下滚动</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
                     <div className="setting-row">
                       <span>字号</span>
                       <Button

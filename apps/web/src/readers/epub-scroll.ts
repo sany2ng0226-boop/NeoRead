@@ -24,6 +24,30 @@ export function installEPUBPaging(
   error: (reason: unknown) => void,
 ) {
   const doc = wnd.document;
+  const { wheel, key, dispose } = pageTurnHandlers(
+    state,
+    active,
+    turn,
+    error,
+    () => wnd.getSelection()?.toString() ?? "",
+  );
+  doc.addEventListener("wheel", wheel, { passive: false });
+  doc.addEventListener("keydown", key);
+  return () => {
+    dispose();
+    doc.removeEventListener("wheel", wheel);
+    doc.removeEventListener("keydown", key);
+  };
+}
+
+/** Wheel and key handlers shared by Readium frames and the main-document pages. */
+export function pageTurnHandlers(
+  state: EPUBScrollState,
+  active: () => boolean,
+  turn: (direction: number) => Promise<void>,
+  error: (reason: unknown) => void,
+  selected: () => string,
+) {
   let disposed = false;
   const move = (direction: number, event: Event) => {
     if (disposed || !active() || !direction || editable(event.target)) return;
@@ -45,7 +69,7 @@ export function installEPUBPaging(
       });
   };
   const wheel = (event: WheelEvent) => {
-    if (event.ctrlKey || wnd.getSelection()?.toString().trim()) return;
+    if (event.ctrlKey || selected().trim()) return;
     const delta =
       Math.abs(event.deltaX) > Math.abs(event.deltaY)
         ? event.deltaX
@@ -85,12 +109,12 @@ export function installEPUBPaging(
     if (direction && !event.repeat) state.locked = false;
     move(direction, event);
   };
-  doc.addEventListener("wheel", wheel, { passive: false });
-  doc.addEventListener("keydown", key);
-  return () => {
-    disposed = true;
-    doc.removeEventListener("wheel", wheel);
-    doc.removeEventListener("keydown", key);
+  return {
+    wheel,
+    key,
+    dispose: () => {
+      disposed = true;
+    },
   };
 }
 

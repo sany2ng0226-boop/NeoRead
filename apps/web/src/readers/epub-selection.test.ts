@@ -495,7 +495,8 @@ it("scrolls by default even when an old saved theme requested pagination", async
   expect(bridge.preferences).toHaveBeenCalledWith(
     expect.objectContaining({ scroll: true }),
   );
-  await adapter.setTheme({ ...defaultTheme, scroll: false });
+  // The legacy `scroll` field never selects pages; only `epubFlow` does.
+  await adapter.setTheme({ ...defaultTheme, epubFlow: "scroll", scroll: false });
   expect(bridge.preferences).toHaveBeenLastCalledWith(
     expect.objectContaining({ scroll: true }),
   );

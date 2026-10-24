@@ -115,8 +115,11 @@ function geometry(node: Element): DOMRect {
   ).indexOf(element);
   return rect(top + 100 + Math.max(0, index) * 100);
 }
+// These cases cover continuous scrolling; epub-web-pages.test.ts covers pages.
+const scrolling = { ...defaultTheme, epubFlow: "scroll" as const };
 async function open(progress?: EPUBLocation) {
   reader = new EPUBReaderAdapter(host, events);
+  reader.preferTheme(scrolling);
   await reader.open({ id: "book", type: "epub", progress } as Document);
   return reader;
 }
@@ -458,11 +461,11 @@ it("preserves a visible anchor when an earlier placeholder is replaced", async (
   );
   expect(visible.getBoundingClientRect().top).toBeCloseTo(before);
 });
-it("applies reader theme and ignores stale paginated preferences", async () => {
+it("applies reader typography with CJK font stacks while retaining scrolling", async () => {
   await open();
+  expect(host.classList.contains("epub-web-paginated")).toBe(false);
   await reader.setTheme({
-    ...defaultTheme,
-    epubFlow: "paginated",
+    ...scrolling,
     fontSize: 1.4,
     fontFamily: "serif",
     lineHeight: 2,
@@ -470,8 +473,12 @@ it("applies reader theme and ignores stale paginated preferences", async () => {
     mode: "sepia",
   });
   expect(host.style.fontSize).toBe("1.4rem");
+  expect(host.style.fontFamily).toContain("Songti SC");
   expect(host.style.getPropertyValue("--epub-margin")).toBe("48px");
   expect(host.classList.contains("epub-web-reader")).toBe(true);
+  await reader.setTheme({ ...scrolling, fontFamily: "sans-serif" });
+  expect(host.style.fontFamily).toContain("PingFang SC");
+  expect(host.style.lineHeight).toBe(String(scrolling.lineHeight));
 });
 
 it.each(["font", "width"])(
@@ -522,7 +529,7 @@ it.each(["font", "width"])(
       );
     };
     await open();
-    await reader.setTheme(defaultTheme);
+    await reader.setTheme(scrolling);
     host.scrollTop = 505;
     host.dispatchEvent(new Event("wheel"));
     host.dispatchEvent(new Event("scroll"));
@@ -538,7 +545,7 @@ it.each(["font", "width"])(
 
     if (change === "font") {
       await reader.setTheme({
-        ...defaultTheme,
+        ...scrolling,
         fontSize: defaultTheme.fontSize * 2,
       });
     } else {

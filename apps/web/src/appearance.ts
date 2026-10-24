@@ -78,6 +78,15 @@ export const stepTranslationSize = stepReadingTextSize;
 
 const serifStack =
   '"Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", ui-serif, serif';
+const sansStack =
+  '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif';
+
+/** CSS font-family for book text: the system sans or Song serif, CJK first-class. */
+export function readingFont(family = defaultTheme.fontFamily) {
+  if (family === "sans-serif") return sansStack;
+  if (family === "serif") return serifStack;
+  return `"${family.replace(/["\\]/g, "")}", ${sansStack}`;
+}
 
 /** CSS font-family for translated text; installed fonts fall back to sans. */
 export function translationFont(

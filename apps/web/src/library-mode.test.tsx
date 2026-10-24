@@ -56,7 +56,7 @@ it.each([undefined, "papers" as const, "books" as const])(
     await loadLibraryPreferences();
     expect(useReaderStore.getState().libraryPreferences).toEqual({
       ...saved,
-      mode: primaryMode === "books" ? "books" : "papers",
+      mode: primaryMode === "papers" ? "papers" : "books",
     });
   },
 );

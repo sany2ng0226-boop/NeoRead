@@ -3,6 +3,7 @@ import type {
   Annotation,
   PDFBlock,
   Document,
+  DocumentLocation,
   ReaderAdapter,
   ReaderEvents,
   ReaderTheme,
@@ -29,23 +30,33 @@ export function ReaderView({
   const adapter = useRef<ReaderAdapter | null>(null);
   const latest = useRef({ theme, annotations, blocks, events, onReady });
   latest.current = { theme, annotations, blocks, events, onReady };
+  // The last position of either EPUB engine, so changing between pages and
+  // scrolling reopens the same characters.
+  const position = useRef<DocumentLocation | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Readium pages a book; the main-document renderer scrolls it and serves
+  // the side-by-side translation.
+  const paged = doc.type === "epub" && theme.epubFlow === "paginated";
   useEffect(() => {
     let disposed = false;
     const container = document.createElement("div");
     container.className = "reader-engine";
     host.current!.append(container);
     let engine: ReaderAdapter | undefined;
+    setLoading(true);
+    setError("");
     const setup = async () => {
       const { PDFReaderAdapter } =
         doc.type === "pdf"
           ? await import("./readers/pdf")
           : { PDFReaderAdapter: undefined };
       const { EPUBReaderAdapter } =
-        doc.type === "epub"
-          ? await import("./readers/epub-web")
-          : { EPUBReaderAdapter: undefined };
+        doc.type !== "epub"
+          ? { EPUBReaderAdapter: undefined }
+          : paged
+            ? await import("./readers/epub")
+            : await import("./readers/epub-web");
       if (disposed) return;
       const Engine = PDFReaderAdapter || EPUBReaderAdapter!;
       engine = new Engine(container, {
@@ -54,6 +65,9 @@ export function ReaderView({
         },
         epubReadingAnchor: (id) => {
           if (!disposed) latest.current.events.epubReadingAnchor?.(id);
+        },
+        pagination: (state) => {
+          if (!disposed) latest.current.events.pagination?.(state);
         },
         readingAnchor: (anchor) => {
           if (!disposed) latest.current.events.readingAnchor?.(anchor);
@@ -77,7 +91,9 @@ export function ReaderView({
           if (!disposed) latest.current.events.blockAction?.(block, action);
         },
         location: (...args) => {
-          if (!disposed) latest.current.events.location(...args);
+          if (disposed) return;
+          position.current = args[0];
+          latest.current.events.location(...args);
         },
         selection: (selection) => {
           if (!disposed) latest.current.events.selection(selection);
@@ -90,7 +106,9 @@ export function ReaderView({
         },
       });
       engine.preferTheme?.(latest.current.theme);
-      await engine.open(doc);
+      await engine.open(
+        position.current ? { ...doc, progress: position.current } : doc,
+      );
       if (disposed) return;
       await engine.setTheme(latest.current.theme);
       await engine.highlight(latest.current.annotations).catch((e) => {
@@ -111,6 +129,11 @@ export function ReaderView({
     });
     return () => {
       disposed = true;
+      // An unsaved opening position still anchors the next engine.
+      const current = adapter.current?.getLocation();
+      if (current && (current.type !== "epub" || current.href))
+        position.current = current;
+      latest.current.events.pagination?.(null);
       adapter.current = null;
       void pending
         .finally(async () => {
@@ -119,7 +142,7 @@ export function ReaderView({
         })
         .catch(() => {});
     };
-  }, [doc.id]);
+  }, [doc.id, paged]);
   useEffect(() => {
     void adapter.current?.setTheme(theme).catch((e) => toast.error(e.message));
   }, [theme]);

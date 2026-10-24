@@ -218,9 +218,11 @@ export interface SmartCategory {
 export interface LibraryPreferences {
   /** Optional contact email sent only to Crossref for its polite pool. */
   crossrefEmail?: string;
-  /** Library opened at startup; defaults to papers. */
-  primaryMode?: LibraryMode;
+  /** Library opened at startup; unset or "last" reopens the last library used. */
+  primaryMode?: LibraryMode | "last";
   mode?: LibraryMode;
+  /** The chat session last chosen for each document, by document ID. */
+  chatSessions?: Record<string, string>;
   papers?: PaperLibraryPreferences;
 }
 /** First-run guide and release notes, stored with the library. */
@@ -350,8 +352,18 @@ export interface ReaderTheme {
   translationFontWeight?: "normal" | "bold";
   /** The highlight palette, in order; the defaults apply when unset. */
   highlightColors?: HighlightColor[];
-  /** Reflowable EPUB text scrolls vertically unless pages are chosen. */
+  /** Reflowable EPUB text turns pages left and right unless scrolling is chosen. */
   epubFlow?: "scroll" | "paginated";
+}
+/** The visible screen of a paginated chapter; pages are counted per chapter. */
+export interface ReaderPagination {
+  chapter: string;
+  /** 1-based screen within the chapter; a wide screen shows two columns. */
+  page: number;
+  pages: number;
+  /** Whether this screen begins or ends the whole book. */
+  first: boolean;
+  last: boolean;
 }
 export interface HighlightColor {
   /** #rrggbb */
@@ -378,7 +390,7 @@ export const defaultTheme: ReaderTheme = {
   translationFontFamily: "serif",
   translationFontWeight: "bold",
   linkTranslationAnnotations: true,
-  epubFlow: "scroll",
+  epubFlow: "paginated",
 };
 export type PDFBlockAction =
   "attach" | "preview" | "copy" | "explain" | "translate";
@@ -416,6 +428,8 @@ export interface ReaderEvents {
   internalLink?: (origin: DocumentLocation) => void;
   epubInteraction?: () => void;
   epubReadingAnchor?: (blockId: string) => void;
+  /** The current page of paginated EPUB text, or null while scrolling. */
+  pagination?: (state: ReaderPagination | null) => void;
   blockHover?: (block: PDFBlock | null) => void;
   annotation?: (target: ReaderAnnotationTarget | null) => void;
   /** Hover preview only; never select or copy annotation text. */

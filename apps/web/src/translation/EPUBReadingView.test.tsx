@@ -12,6 +12,7 @@ import {
 } from "@reader/core";
 const fixture = vi.hoisted(() => ({
   events: undefined as ReaderEvents | undefined,
+  theme: undefined as ReaderTheme | undefined,
   ready: undefined as ReaderAdapter | undefined,
   translations: [] as TranslationBlock[],
   push: undefined as
@@ -77,11 +78,14 @@ vi.mock("../ReaderView", () => ({
   ReaderView: ({
     events,
     onReady,
+    theme,
   }: {
     events: ReaderEvents;
     onReady: (a: ReaderAdapter, t: []) => void;
+    theme: ReaderTheme;
   }) => {
     fixture.events = events;
+    fixture.theme = theme;
     useEffect(() => onReady(adapter, []), []);
     return <div>EPUB 原文</div>;
   },
@@ -178,6 +182,40 @@ async function click(label: string) {
   await act(async () => button.click());
 }
 
+it("shows chapter pages with explicit turns, and scrolls the source while reading side by side", async () => {
+  expect(fixture.theme?.epubFlow).toBe("paginated");
+  await act(async () =>
+    fixture.events!.pagination?.({
+      chapter: "第二章",
+      page: 2,
+      pages: 5,
+      first: false,
+      last: false,
+    }),
+  );
+  await act(async () =>
+    fixture.events!.location({ type: "epub", href: "a.xhtml" }, 0.374),
+  );
+  expect(host.querySelector(".epub-page-header")?.textContent).toBe("第二章");
+  const footer = host.querySelector(".epub-page-footer")!;
+  expect(footer.textContent).toBe("2 / 537%");
+  expect(
+    footer.querySelector('[aria-label="本章第 2 页，共 5 页"]'),
+  ).toBeTruthy();
+  await click("下一页");
+  expect(adapter.next).toHaveBeenCalledTimes(1);
+  await click("上一页");
+  expect(adapter.previous).toHaveBeenCalledTimes(1);
+
+  await click("原文译文");
+  expect(fixture.theme?.epubFlow).toBe("scroll");
+  expect(host.querySelector(".epub-page-footer")).toBeNull();
+  await click("仅原文");
+  expect(fixture.theme?.epubFlow).toBe("paginated");
+  // A theme that chose scrolling keeps it in every mode.
+  await renderView({ ...defaultTheme, epubFlow: "scroll" });
+  expect(fixture.theme?.epubFlow).toBe("scroll");
+});
 it("supports all modes and chapter navigation without PDF page locations", async () => {
   await click("仅译文");
   expect(host.querySelector('[data-mode="translation"]')).toBeTruthy();
