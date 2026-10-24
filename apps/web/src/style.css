@@ -1737,6 +1737,29 @@ kbd {
   background: #313d35;
   color: #d9e3d3;
 }
+/* A book's own cover, whole and unstretched, on a quiet mat in place of the
+   text cover, which stays underneath until the image has loaded. */
+.cover-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 12px 14px;
+  object-fit: contain;
+  opacity: 0;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 6px rgb(0 0 0 / 14%));
+  transition: opacity 200ms ease;
+}
+.book-cover-frame .book-cover[data-image] {
+  background: color-mix(in oklch, var(--muted) 70%, var(--background));
+}
+.book-cover[data-image] .cover-image {
+  opacity: 1;
+}
+.book-cover[data-image] > :not(.cover-image) {
+  visibility: hidden;
+}
 .cover-processing {
   position: absolute;
   left: 12px;
@@ -2228,6 +2251,9 @@ kbd {
 .book-list .cover-author,
 .book-list .cover-decoration {
   display: none;
+}
+.book-list .cover-image {
+  padding: 8px;
 }
 .book-list
   :is(

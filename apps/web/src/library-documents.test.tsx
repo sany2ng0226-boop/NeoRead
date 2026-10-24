@@ -16,6 +16,8 @@ vi.mock("@reader/api", () => ({
     processingUsage: vi.fn(),
     chatUsage: vi.fn(),
   },
+  publicationURL: (id: string, resource: string) =>
+    `/pub/session/${id}/${resource}`,
 }));
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -46,6 +48,8 @@ const docs: Document[] = ["Alpha", "Beta"].map((title, i) => ({
   percentage: 0,
 }));
 let root: Root, host: HTMLDivElement;
+let view: "grid" | "list" = "grid";
+let fetchMock: ReturnType<typeof vi.fn>;
 const open = vi.fn(),
   edit = vi.fn();
 function Harness() {
@@ -53,7 +57,7 @@ function Harness() {
   return (
     <LibraryDocuments
       documents={documents}
-      libraryView="grid"
+      libraryView={view}
       jobs={[]}
       processingError=""
       openDocument={open}
@@ -93,6 +97,18 @@ beforeEach(async () => {
     elapsedMs: 0,
   });
   useReaderStore.setState({ documents: docs });
+  view = "grid";
+  // Alpha has its own cover; Beta's manifest is unavailable.
+  fetchMock = vi.fn(async (url: string) =>
+    url === "/pub/session/0/manifest.json"
+      ? Response.json({
+          resources: [
+            { href: "Images/cover.jpg", rel: "cover", type: "image/jpeg" },
+          ],
+        })
+      : new Response("", { status: 404 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -107,6 +123,32 @@ const button = (label: string) =>
   [...document.querySelectorAll<HTMLButtonElement>("button")].find(
     (b) => b.textContent?.trim() === label,
   )!;
+it("shows the book's own cover in grid and list, keeping it across view changes", async () => {
+  const covers = () => [
+    ...host.querySelectorAll<HTMLButtonElement>(".book-cover"),
+  ];
+  const image = () => covers()[0].querySelector("img")!;
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    "/pub/session/0/manifest.json",
+    "/pub/session/1/manifest.json",
+  ]);
+  expect(image().getAttribute("src")).toBe("/pub/session/0/Images/cover.jpg");
+  expect(covers()[1].querySelector("img")).toBeNull();
+  await act(async () => image().dispatchEvent(new Event("load")));
+  expect(covers()[0].dataset.image).toBe("true");
+  const loaded = image();
+
+  for (const next of ["list", "grid", "list"] as const) {
+    view = next;
+    await act(async () => root.render(<Harness />));
+    expect(!!host.querySelector(".book-list")).toBe(next === "list");
+    expect(image()).toBe(loaded);
+    expect(covers()[0].dataset.image).toBe("true");
+    expect(covers()[1].querySelector("img")).toBeNull();
+  }
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
 it("moves selected documents to the trash, keeps failures and offers an undo", async () => {
   await act(async () => button("编辑").click());
   await act(async () =>

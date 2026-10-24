@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   BookOpen,
-  FileText,
-  ArrowUpRight,
   Star,
   Pencil,
   Trash2,
@@ -32,6 +30,7 @@ import {
   useOverviewJobs,
 } from "./DocumentOverview";
 import { CoverProcessing } from "./ProcessingStatus";
+import { BookCover } from "./BookCover";
 import { toggleDocumentSelection, trashWithUndo } from "./library-actions";
 
 export function LibraryDocuments({
@@ -219,34 +218,11 @@ export function LibraryDocuments({
                 </div>
               )}
               <div className="book-cover-frame">
-                <Button
-                  variant="ghost"
-                  title={doc.title}
-                  aria-label={`打开 ${doc.title}`}
-                  className={`book-cover cover-${i % 4}`}
-                  onClick={() => openDocument(doc)}
-                >
-                  <div className="cover-top">
-                    <span>{doc.type.toUpperCase()}</span>
-                    {doc.type === "epub" ? (
-                      <BookOpen size={18} />
-                    ) : (
-                      <FileText size={18} />
-                    )}
-                  </div>
-                  <div className="cover-text">
-                    <div className="cover-title">{doc.title}</div>
-                    {doc.author && (
-                      <div className="cover-author" title={doc.author}>
-                        {doc.author}
-                      </div>
-                    )}
-                  </div>
-                  <div className="cover-bottom">
-                    <ArrowUpRight size={18} />
-                  </div>
-                  <div className="cover-decoration" />
-                </Button>
+                <BookCover
+                  document={doc}
+                  index={i}
+                  onOpen={() => openDocument(doc)}
+                />
                 {overviewJobs.some(
                   (o) =>
                     o.documentId === doc.id &&
