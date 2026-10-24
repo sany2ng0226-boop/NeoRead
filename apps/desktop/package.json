@@ -1,7 +1,7 @@
 {
   "name": "@reader/desktop",
   "productName": "Reader",
-  "version": "0.8.9-local.1",
+  "version": "0.8.9-local.2",
   "private": true,
   "type": "module",
   "main": "dist/main.cjs",
