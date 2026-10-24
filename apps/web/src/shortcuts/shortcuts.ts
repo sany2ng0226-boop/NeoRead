@@ -145,7 +145,15 @@ export function useShortcut(
 /** Keyboard events inside Readium frames do not bubble to the renderer window. */
 export function forwardReaderShortcut(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || event.repeat) return;
+  // A plain Escape also leaves immersive reading and closes sidebar drawers.
+  const escape =
+    event.key === "Escape" &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey;
   if (
+    !escape &&
     !["readerLeft", "readerRight", "search"].some((id) =>
       matches(event, id as ShortcutId),
     )

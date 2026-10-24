@@ -129,6 +129,12 @@ import { scheduleProgress, flushProgress } from "./progress";
 import { Slider } from "@reader/ui/components/slider";
 import { TranslationFontControls } from "./TranslationFontControls";
 import { AppearancePicker } from "./AppearancePicker";
+import {
+  interactionOpen,
+  popupOpen,
+  useNarrowReader,
+  useReaderChrome,
+} from "./reader-chrome";
 function IconButton({
   label,
   children,
@@ -254,6 +260,7 @@ export function Workspace({
   const [referenceBusy, setReferenceBusy] = useState(false);
   const visitReference = async (target: DocumentLocation, text: string) => {
     if (!adapter || !referenceNavigation || referenceNavigation.busy) return;
+    leaveDrawer();
     setReferenceBusy(true);
     try {
       await referenceNavigation.visit(target, async (location) => {
@@ -303,16 +310,93 @@ export function Workspace({
       });
     },
   );
+  // `left`/`right` keep the docked layout; narrow windows show one sidebar at
+  // a time over the text and restore the docked layout when widened again.
   const [left, setLeft] = useState(true);
   const [right, setRight] = useState(true);
+  const narrow = useNarrowReader();
+  const [drawer, setDrawer] = useState<"left" | "right" | null>(null);
+  const leftDocked = left && !narrow;
+  const rightDocked = right && !narrow;
+  const leftShown = narrow ? drawer === "left" : left;
+  const rightShown = narrow ? drawer === "right" : right;
+  const showLeft = () => (narrow ? setDrawer("left") : setLeft(true));
+  const showRight = () => (narrow ? setDrawer("right") : setRight(true));
+  const toggleLeft = () =>
+    narrow
+      ? setDrawer((side) => (side === "left" ? null : "left"))
+      : setLeft((value) => !value);
+  const toggleRight = () =>
+    narrow
+      ? setDrawer((side) => (side === "right" ? null : "right"))
+      : setRight((value) => !value);
+  const toolbar = useRef<HTMLElement>(null);
+  const leftAside = useRef<HTMLElement>(null);
+  const rightAside = useRef<HTMLElement>(null);
+  const drawerFocus = useRef(true);
+  /** Close the drawer; `restore` returns focus to its toolbar button. */
+  const closeDrawer = (restore = true) => {
+    drawerFocus.current = restore;
+    setDrawer(null);
+  };
+  /** Navigating from a drawer shows the text it leads to. */
+  const leaveDrawer = () => {
+    if (narrow && drawer) closeDrawer(false);
+  };
+  // Adjusted while rendering, before the sidebars become inert or move, so
+  // focus and the docked sizes are read from the layout being left.
+  const [layoutNarrow, setLayoutNarrow] = useState(narrow);
+  if (layoutNarrow !== narrow) {
+    setLayoutNarrow(narrow);
+    if (narrow) {
+      // Keep a sidebar in use (typing a question, searching) in view.
+      const active = document.activeElement;
+      setDrawer(
+        leftAside.current?.contains(active)
+          ? "left"
+          : rightAside.current?.contains(active)
+            ? "right"
+            : null,
+      );
+    } else {
+      if (drawer === "left") setLeft(true);
+      if (drawer === "right") setRight(true);
+      setDrawer(null);
+    }
+  }
+  const openedDrawer = useRef(drawer);
+  useEffect(() => {
+    const previous = openedDrawer.current;
+    openedDrawer.current = drawer;
+    if (drawer) {
+      const panel = drawer === "left" ? leftAside : rightAside;
+      const frame = requestAnimationFrame(() => {
+        if (!panel.current?.contains(document.activeElement))
+          panel.current?.focus({ preventScroll: true });
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    const restore = drawerFocus.current;
+    drawerFocus.current = true;
+    if (!previous || !restore || !narrow) return;
+    const active = document.activeElement;
+    const aside = previous === "left" ? leftAside : rightAside;
+    if (active && active !== document.body && !aside.current?.contains(active))
+      return;
+    toolbar.current
+      ?.querySelector<HTMLElement>(
+        `[aria-label="${previous === "left" ? "目录与搜索" : "Agent 与批注"}"]`,
+      )
+      ?.focus({ preventScroll: true });
+  }, [drawer, narrow]);
   const leftPanel = usePanelRef();
   const rightPanel = usePanelRef();
   const panelGroup = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const group = panelGroup.current;
     const changes = [
-      [leftPanel.current, left],
-      [rightPanel.current, right],
+      [leftPanel.current, leftDocked],
+      [rightPanel.current, rightDocked],
     ] as const;
     if (
       !group ||
@@ -331,7 +415,7 @@ export function Workspace({
       clearTimeout(timer);
       group.removeAttribute("data-toggling");
     };
-  }, [left, right, leftPanel, rightPanel]);
+  }, [leftDocked, rightDocked, leftPanel, rightPanel]);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [rightTab, setRightTab] = useState("ai");
@@ -373,6 +457,50 @@ export function Workspace({
     null,
   );
   const readingPane = useRef<HTMLDivElement>(null);
+  // Selections, edits and toolbar actions in progress keep the toolbar shown.
+  const selecting = !!selection || !!annotationTarget || !!translationSelection;
+  const chromeHeld = useRef(false);
+  chromeHeld.current =
+    !adapter ||
+    selecting ||
+    noteOpen ||
+    !!returnLocation ||
+    referenceBusy ||
+    !!drawer;
+  const escapeClears = useRef(false);
+  escapeClears.current = selecting;
+  const { visible: chromeVisible, chrome } = useReaderChrome(
+    toolbar,
+    readingPane,
+    () => chromeHeld.current || interactionOpen(),
+  );
+  useEffect(() => {
+    if (drawer) chrome.reveal();
+  }, [drawer, chrome]);
+  const drawerOpen = useRef(drawer);
+  drawerOpen.current = drawer;
+  useEffect(() => {
+    // Readium frames forward Escape here (see forwardReaderShortcut).
+    const key = (event: KeyboardEvent) => {
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey ||
+        popupOpen()
+      )
+        return;
+      if (drawerOpen.current) {
+        drawerFocus.current = true;
+        setDrawer(null);
+      } else if (!escapeClears.current) chrome.reveal(true);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [chrome]);
   const [sessionCatalog, setSessionCatalog] = useState<{
     documentId: string;
     items: DocumentChatSession[];
@@ -512,10 +640,10 @@ export function Workspace({
     setSearchedQuery("");
     setSearching(false);
   }, [doc.id]);
-  useShortcut("readerLeft", () => setLeft((value) => !value));
-  useShortcut("readerRight", () => setRight((value) => !value));
+  useShortcut("readerLeft", toggleLeft);
+  useShortcut("readerRight", toggleRight);
   useShortcut("search", () => {
-    setLeft(true);
+    showLeft();
     setLeftTab("search");
     requestAnimationFrame(() => searchInput.current?.focus());
   });
@@ -583,9 +711,11 @@ export function Workspace({
     processing?.layoutRevision,
   ]);
   const move = (next: DocumentLocation) => {
+    leaveDrawer();
     void adapter?.goTo(next).catch((e) => toast.error(e.message));
   };
   const focusAnnotation = (annotation: Annotation) => {
+    leaveDrawer();
     const go = adapter?.focusLocation
       ? adapter.focusLocation(annotation.location)
       : adapter?.goTo(annotation.location);
@@ -599,7 +729,8 @@ export function Workspace({
       const target = annotations.find((a) => a.id === linkTarget.annotation);
       if (target) {
         focusAnnotation(target);
-        setRight(true);
+        // The note is listed beside the text only where there is room.
+        if (!narrow) setRight(true);
         setRightTab("notes");
       } else toast.info("这条批注已不存在，已打开文档");
     } else if (linkTarget.page && doc.type === "pdf")
@@ -716,7 +847,7 @@ export function Workspace({
         quote,
       ].slice(-6),
     );
-    setRight(true);
+    showRight();
     setRightTab("ai");
     adapter?.clearSelection();
     requestAnimationFrame(() => composeInput.current?.focus());
@@ -783,7 +914,7 @@ export function Workspace({
     }
   };
   const showAnswer = (messageId: string) => {
-    setRight(true);
+    showRight();
     setRightTab("ai");
     requestAnimationFrame(() =>
       document
@@ -808,6 +939,7 @@ export function Workspace({
     }
   };
   const openSearchResult = (result: SearchResult) => {
+    leaveDrawer();
     const go = adapter?.focusLocation
       ? adapter.focusLocation(result.location)
       : adapter?.goTo(result.location);
@@ -816,7 +948,7 @@ export function Workspace({
   const addQuote = () => {
     if (selection) {
       setQuotes((items) => [...items, selection].slice(-6));
-      setRight(true);
+      showRight();
       setRightTab("ai");
       adapter?.clearSelection();
       setSelection(null);
@@ -843,7 +975,7 @@ export function Workspace({
       return;
     }
     setSending(true);
-    setRight(true);
+    showRight();
     setRightTab("ai");
     const controller = new AbortController();
     abort.current = controller;
@@ -950,7 +1082,7 @@ export function Workspace({
       toast.info("请等待当前回答完成");
       return;
     }
-    setRight(true);
+    showRight();
     setRightTab("ai");
     if (action === "explain") {
       void send(
@@ -1046,7 +1178,11 @@ export function Workspace({
   );
   return (
     <div className="workspace">
-      <header className="reader-toolbar">
+      <header
+        ref={toolbar}
+        className="reader-toolbar"
+        data-chrome={chromeVisible ? "shown" : "hidden"}
+      >
         <div className="reader-title-group">
           <IconButton
             label="返回书库"
@@ -1060,9 +1196,9 @@ export function Workspace({
           </IconButton>
           <IconButton
             label="目录与搜索"
-            active={left}
-            expanded={left}
-            onClick={() => setLeft(!left)}
+            active={leftShown}
+            expanded={leftShown}
+            onClick={toggleLeft}
           >
             <PanelLeft />
           </IconButton>
@@ -1287,9 +1423,9 @@ export function Workspace({
           </Popover>
           <IconButton
             label="Agent 与批注"
-            active={right}
-            expanded={right}
-            onClick={() => setRight(!right)}
+            active={rightShown}
+            expanded={rightShown}
+            onClick={toggleRight}
           >
             <Sparkles />
           </IconButton>
@@ -1303,7 +1439,7 @@ export function Workspace({
         className="reader-panels"
         elementRef={panelGroup}
         onLayoutChanged={(layout, { isUserInteraction }) => {
-          if (isUserInteraction) {
+          if (isUserInteraction && !narrow) {
             setLeft(layout.navigation > 0);
             setRight(layout.assistant > 0);
           }
@@ -1325,7 +1461,15 @@ export function Workspace({
           minSize="180px"
           maxSize="30%"
         >
-          <aside className="reader-sidebar" data-open={left} inert={!left}>
+          <aside
+            ref={leftAside}
+            className="reader-sidebar"
+            aria-label="目录与搜索"
+            tabIndex={-1}
+            data-open={leftShown}
+            data-drawer={narrow || undefined}
+            inert={!leftShown}
+          >
             <Tabs
               value={leftTab}
               onValueChange={(value) => setLeftTab(String(value))}
@@ -1340,6 +1484,17 @@ export function Workspace({
                   <Search className="size-3.5" />
                   搜索
                 </TabsTrigger>
+                {narrow && (
+                  <Button
+                    className="drawer-close"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="关闭目录与搜索"
+                    onClick={() => closeDrawer()}
+                  >
+                    <X />
+                  </Button>
+                )}
               </TabsList>
               <TabsContent value="toc" className="min-h-0 flex-1">
                 <ScrollArea className="h-full">
@@ -1409,8 +1564,8 @@ export function Workspace({
           </aside>
         </ResizablePanel>
         <ResizableHandle
-          disabled={!left}
-          className={left ? "" : "sidebar-handle-closed"}
+          disabled={!leftDocked}
+          className={leftDocked ? "" : "sidebar-handle-closed"}
         />
         <ResizablePanel id="reading" minSize="30%">
           <div className="reading-pane" ref={readingPane}>
@@ -1419,7 +1574,7 @@ export function Workspace({
                 doc.type === "pdf" ? PDFReadingView : EPUBReadingView;
               return (
                 <ReadingView
-                  sidebarsOpen={{ left, right }}
+                  sidebarsOpen={{ left: leftDocked, right: rightDocked }}
                   document={doc}
                   theme={theme}
                   annotations={annotations}
@@ -1435,6 +1590,8 @@ export function Workspace({
                     setTOC(items);
                   }}
                   events={{
+                    // Reading inside Readium frames never reaches this DOM.
+                    epubInteraction: () => chrome.read(),
                     zoom: (zoom) => setTheme({ zoom }),
                     location: saveLocation,
                     selection: selectText,
@@ -1541,8 +1698,8 @@ export function Workspace({
           </div>
         </ResizablePanel>
         <ResizableHandle
-          disabled={!right}
-          className={right ? "" : "sidebar-handle-closed"}
+          disabled={!rightDocked}
+          className={rightDocked ? "" : "sidebar-handle-closed"}
         />
         <ResizablePanel
           id="assistant"
@@ -1554,7 +1711,15 @@ export function Workspace({
           minSize="250px"
           maxSize="45%"
         >
-          <aside className="assistant-sidebar" data-open={right} inert={!right}>
+          <aside
+            ref={rightAside}
+            className="assistant-sidebar"
+            aria-label="Agent 与批注"
+            tabIndex={-1}
+            data-open={rightShown}
+            data-drawer={narrow || undefined}
+            inert={!rightShown}
+          >
             <Tabs
               value={rightTab}
               onValueChange={(value) => setRightTab(String(value))}
@@ -1591,6 +1756,17 @@ export function Workspace({
                       )
                     }
                   />
+                )}
+                {narrow && (
+                  <Button
+                    className="drawer-close"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="关闭 Agent 与批注"
+                    onClick={() => closeDrawer()}
+                  >
+                    <X />
+                  </Button>
                 )}
               </TabsList>
               <TabsContent
@@ -1830,6 +2006,14 @@ export function Workspace({
           </aside>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {narrow && (
+        <div
+          className="reader-drawer-backdrop"
+          data-open={!!drawer}
+          aria-hidden="true"
+          onClick={() => closeDrawer()}
+        />
+      )}
 
       <SelectionTranslation
         key={doc.id}

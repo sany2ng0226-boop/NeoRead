@@ -416,6 +416,7 @@ export function EPUBReadingView({
               events={{
                 ...events,
                 epubInteraction: () => {
+                  live.current.events.epubInteraction?.();
                   side.current = "source";
                   syncTarget.current = undefined;
                   void engine.current?.focusEPUBLocations?.([]);
