@@ -40,7 +40,7 @@ export function installEPUBPaging(
   };
 }
 
-/** Wheel and key handlers shared by Readium frames and the main-document pages. */
+/** Wheel and key handlers shared by Readium frames and the outer reader. */
 export function pageTurnHandlers(
   state: EPUBScrollState,
   active: () => boolean,
