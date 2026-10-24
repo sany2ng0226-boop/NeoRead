@@ -6,7 +6,7 @@ import { Button } from "@reader/ui/components/button";
 import { coverResource } from "./epub-cover";
 
 /**
- * A book's own cover when its EPUB has one, over the text cover that stays
+ * An EPUB's own cover or a PDF's first page, over the text cover that stays
  * in place while it loads and whenever there is none or it fails. Grid and
  * list show the same card, so changing views keeps what has been loaded.
  */
@@ -23,11 +23,13 @@ export function BookCover({
   // Keyed by document, so a reused card never shows another book's cover.
   const [cover, setCover] = useState<{ id: string; src: string }>();
   const [loaded, setLoaded] = useState("");
-  const wanted = doc.type === "epub";
+  const wanted = doc.type === "epub" || doc.type === "pdf";
   useEffect(() => {
     if (!wanted) return;
     const controller = new AbortController();
-    const load = () =>
+    // The drawn first page of a PDF lives only as long as this card shows it.
+    let drawn = "";
+    const loadEPUB = () =>
       fetch(publicationURL(doc.id, "manifest.json"), {
         signal: controller.signal,
       })
@@ -36,14 +38,30 @@ export function BookCover({
           const resource = coverResource(manifest);
           if (resource && !controller.signal.aborted)
             setCover({ id: doc.id, src: publicationURL(doc.id, resource) });
-        })
-        // No cover, or an unreadable manifest: the text cover stays.
+        });
+    const loadPDF = async () => {
+      const { renderPDFCover } = await import("./pdf-cover");
+      const blob = await renderPDFCover(
+        publicationURL(doc.id, "original.pdf"),
+        controller.signal,
+      );
+      if (!blob || controller.signal.aborted) return;
+      drawn = URL.createObjectURL(blob);
+      setCover({ id: doc.id, src: drawn });
+    };
+    const load = () =>
+      (doc.type === "pdf" ? loadPDF() : loadEPUB())
+        // No cover, or an unreadable file: the text cover stays.
         .catch(() => {});
-    // Read the manifest once the card is about to be seen.
+    // Large shelves would otherwise read every manifest or PDF at once.
     const element = button.current;
+    const cleanup = () => {
+      controller.abort();
+      if (drawn) URL.revokeObjectURL(drawn);
+    };
     if (!element || typeof IntersectionObserver === "undefined") {
       void load();
-      return () => controller.abort();
+      return cleanup;
     }
     const observer = new IntersectionObserver(
       (entries) => {
@@ -56,9 +74,9 @@ export function BookCover({
     observer.observe(element);
     return () => {
       observer.disconnect();
-      controller.abort();
+      cleanup();
     };
-  }, [doc.id, wanted]);
+  }, [doc.id, doc.type, wanted]);
   const src = wanted && cover?.id === doc.id ? cover.src : undefined;
   return (
     <Button

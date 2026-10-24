@@ -6,6 +6,17 @@ import type { Document } from "@reader/core";
 import { BookCover } from "./BookCover";
 import { paper } from "./papers/fixtures";
 
+// Each PDF's first-page drawing, settled by the test.
+const drawings = vi.hoisted(
+  () =>
+    new Map<string, { resolve: (blob?: Blob) => void; signal: AbortSignal }>(),
+);
+vi.mock("./pdf-cover", () => ({
+  renderPDFCover: (url: string, signal: AbortSignal) =>
+    new Promise<Blob | undefined>((resolve) =>
+      drawings.set(url.split("/")[3], { resolve, signal }),
+    ),
+}));
 vi.mock("@reader/api", () => ({
   publicationURL: (id: string, resource: string) =>
     `/pub/session/${id}/${resource}`,
@@ -49,6 +60,12 @@ beforeEach(() => {
       }),
   );
   vi.stubGlobal("fetch", fetchMock);
+  drawings.clear();
+  let made = 0;
+  vi.spyOn(URL, "createObjectURL").mockImplementation(
+    () => `blob:page-${++made}`,
+  );
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
   pending.clear();
   host = document.createElement("div");
   document.body.append(host);
@@ -58,6 +75,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("shows the book's own cover once it has loaded, keeping the text cover until then", async () => {
@@ -103,9 +121,44 @@ it("falls back to the text cover for missing, failed or broken covers", async ()
   expect(host.querySelector(".cover-title")!.textContent).toBe("书 broken");
 });
 
-it("never asks for an EPUB manifest for PDFs", async () => {
+it("shows a PDF's first page without asking for an EPUB manifest", async () => {
   await render(book("pdf", { type: "pdf" }));
   expect(fetchMock).not.toHaveBeenCalled();
+  expect(image()).toBeNull();
+  expect(drawings.has("pdf")).toBe(true);
+  await act(async () => drawings.get("pdf")!.resolve(new Blob(["page"])));
+  expect(image()!.getAttribute("src")).toBe("blob:page-1");
+  await act(async () => image()!.dispatchEvent(new Event("load")));
+  expect(cover().dataset.image).toBe("true");
+  // Rendering the same card again draws nothing more.
+  await render(book("pdf", { type: "pdf", percentage: 0.4 }));
+  expect(drawings.size).toBe(1);
+  expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+  await act(async () => root.render(null));
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:page-1");
+});
+
+it("keeps the text cover for a PDF that cannot be drawn", async () => {
+  await render(book("locked", { type: "pdf" }));
+  await act(async () => drawings.get("locked")!.resolve(undefined));
+  expect(image()).toBeNull();
+  expect(URL.createObjectURL).not.toHaveBeenCalled();
+  expect(host.querySelector(".cover-title")!.textContent).toBe("书 locked");
+});
+
+it("cancels a PDF drawing on changing books and never shows it there", async () => {
+  await render(book("p1", { type: "pdf" }));
+  const first = drawings.get("p1")!;
+  await render(book("p2", { type: "pdf" }));
+  expect(first.signal.aborted).toBe(true);
+  await act(async () => first.resolve(new Blob(["late"])));
+  expect(image()).toBeNull();
+  expect(URL.createObjectURL).not.toHaveBeenCalled();
+  await act(async () => drawings.get("p2")!.resolve(new Blob(["p2"])));
+  expect(image()!.getAttribute("src")).toBe("blob:page-1");
+  // Leaving for an EPUB frees the drawn page.
+  await render(book("e1"));
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:page-1");
   expect(image()).toBeNull();
 });
 
