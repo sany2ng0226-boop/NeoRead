@@ -248,6 +248,40 @@ it("fades the toolbar while reading in a frame and brings it back on request", a
   expect(toolbar().dataset.chrome).toBe("shown");
 });
 
+it("keeps a hovered toolbar when the shown drag region reports a leave from inside it", async () => {
+  await render();
+  toolbar().getBoundingClientRect = () => new DOMRect(0, 0, 1440, 58);
+  await act(async () => state.events!.epubInteraction!());
+  expect(toolbar().dataset.chrome).toBe("hidden");
+  // The hidden toolbar is no drag region, so moving in its blank area counts.
+  const move = (target: Element, clientX: number, clientY: number) =>
+    act(async () => {
+      target.dispatchEvent(
+        new MouseEvent("pointermove", { bubbles: true, clientX, clientY }),
+      );
+    });
+  await move(toolbar(), 680, 28);
+  expect(toolbar().dataset.chrome).toBe("shown");
+  // Becoming a drag region again under the resting pointer.
+  await act(async () => {
+    toolbar().dispatchEvent(
+      new MouseEvent("pointerleave", { clientX: 680, clientY: 28 }),
+    );
+    vi.advanceTimersByTime(9000);
+  });
+  expect(toolbar().dataset.chrome).toBe("shown");
+  // An exit through the drag region goes unreported; the next move below ends it.
+  await move(document.querySelector(".reader-stage")!, 680, 300);
+  await act(async () => vi.advanceTimersByTime(3000));
+  expect(toolbar().dataset.chrome).toBe("hidden");
+
+  // Turning a page inside a frame also means the pointer left the toolbar.
+  await move(toolbar(), 680, 28);
+  expect(toolbar().dataset.chrome).toBe("shown");
+  await act(async () => state.events!.epubInteraction!());
+  expect(toolbar().dataset.chrome).toBe("hidden");
+});
+
 it("keeps the toolbar during a selection or a typed question", async () => {
   await render();
   await act(async () =>

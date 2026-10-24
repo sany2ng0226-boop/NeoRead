@@ -68,14 +68,20 @@ export class ReaderChrome {
   }
   /** The reader turned, scrolled or clicked into the text. */
   read() {
+    // The pointer is with the text, even if the toolbar never saw it leave.
+    this.pointer = false;
     this.pinned = false;
     if (!this.hide()) this.schedule();
+  }
+  get hovered() {
+    return this.pointer;
   }
   pointerEnter() {
     this.pointer = true;
     this.reveal();
   }
   pointerLeave() {
+    if (!this.pointer) return;
     this.pointer = false;
     this.schedule();
   }
@@ -141,12 +147,45 @@ export function useReaderChrome(
     const pane = reading.current;
     const controller = new AbortController();
     const signal = controller.signal;
+    // On macOS the shown toolbar is a window drag region, which receives no
+    // pointer events. Turning it back into one under a resting pointer can
+    // report a leave from inside the toolbar, and a real exit through a drag
+    // area may never be reported; so a leave only counts outside the toolbar,
+    // and pointer movement elsewhere (or reading) ends the hover as well.
+    const inside = (event: PointerEvent) => {
+      const box = bar!.getBoundingClientRect();
+      return (
+        event.clientX >= box.left &&
+        event.clientX < box.right &&
+        event.clientY >= box.top &&
+        event.clientY < box.bottom
+      );
+    };
     bar?.addEventListener("pointerenter", () => chrome.pointerEnter(), {
       signal,
     });
-    bar?.addEventListener("pointerleave", () => chrome.pointerLeave(), {
-      signal,
-    });
+    bar?.addEventListener(
+      "pointermove",
+      () => {
+        if (!chrome.hovered) chrome.pointerEnter();
+      },
+      { signal },
+    );
+    bar?.addEventListener(
+      "pointerleave",
+      (event) => {
+        if (!inside(event)) chrome.pointerLeave();
+      },
+      { signal },
+    );
+    document.addEventListener(
+      "pointermove",
+      (event) => {
+        if (chrome.hovered && !bar?.contains(event.target as Node | null))
+          chrome.pointerLeave();
+      },
+      { passive: true, signal },
+    );
     bar?.addEventListener(
       "focusin",
       (event) => {

@@ -36,12 +36,16 @@ it("stays while the pointer is on it or keyboard focus is inside", () => {
   chrome.read();
   chrome.pointerEnter();
   expect(chrome.visible).toBe(true);
-  chrome.read();
   vi.advanceTimersByTime(10_000);
   expect(chrome.visible).toBe(true);
   chrome.pointerLeave();
   vi.advanceTimersByTime(3000);
   expect(chrome.visible).toBe(false);
+  // Reading means the pointer is with the text, even without a leave event.
+  chrome.pointerEnter();
+  chrome.read();
+  expect(chrome.visible).toBe(false);
+  expect(chrome.hovered).toBe(false);
 
   chrome.focusIn();
   vi.advanceTimersByTime(10_000);

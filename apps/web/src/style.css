@@ -2006,6 +2006,12 @@ kbd {
   :is(button, input, a, select, textarea, [role="button"]) {
   -webkit-app-region: no-drag;
 }
+/* Drag regions swallow pointer events, so a faded reading toolbar must not be
+   one: the pointer that brings it back has to reach the page. It drags the
+   window again once shown; the top-edge strip stays draggable throughout. */
+.app[data-platform="darwin"] .reader-toolbar[data-chrome="hidden"] {
+  -webkit-app-region: no-drag;
+}
 .app[data-platform="darwin"] .reader-toolbar,
 .app[data-platform="darwin"]
   .library-sidebar.collapsed
