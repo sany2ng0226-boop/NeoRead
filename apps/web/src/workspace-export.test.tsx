@@ -135,3 +135,16 @@ it("checks annotations once on opening, before loading marks, not on progress up
   await act(async () => render(1));
   expect(api.recoverAnnotations).toHaveBeenCalledTimes(1);
 });
+
+it("retries transient recovery contention before reading annotations", async () => {
+  vi.mocked(api.recoverAnnotations).mockRejectedValueOnce(
+    new Error("正在更新译文，请稍后重试"),
+  );
+  await act(async () => render(0));
+  expect(api.annotations).not.toHaveBeenCalled();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  });
+  expect(api.recoverAnnotations).toHaveBeenCalledTimes(2);
+  expect(api.annotations).toHaveBeenCalledTimes(1);
+});

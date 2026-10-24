@@ -525,10 +525,29 @@ export function Workspace({
     abort.current = null;
     if (currentSession) void session.load();
     setSending(false);
-    api
-      .recoverAnnotations(doc.id)
-      .catch((e) => toast.error(e.message))
-      .then(() => api.annotations(doc.id))
+    const recover = async () => {
+      for (let attempt = 0; alive; attempt++) {
+        try {
+          await api.recoverAnnotations(doc.id);
+          return;
+        } catch (error) {
+          const message = (error as Error).message;
+          const busy =
+            /^(正在检查批注或开始重译|正在修改批注|正在更新译文)，请稍后重试$/.test(
+              message,
+            );
+          if (!busy || attempt >= 3) throw error;
+          await new Promise((resolve) =>
+            setTimeout(resolve, 100 * 2 ** attempt),
+          );
+        }
+      }
+    };
+    recover()
+      .catch((e) => {
+        if (alive) toast.error(e.message);
+      })
+      .then(() => (alive ? api.annotations(doc.id) : []))
       .then((a) => {
         if (alive) {
           setAnnotations(a);
