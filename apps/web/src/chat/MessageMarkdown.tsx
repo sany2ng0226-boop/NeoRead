@@ -18,6 +18,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { ErrorBoundary } from "../ErrorBoundary";
 import remend from "remend";
+import { remarkCJKStrong } from "./remark-cjk-strong";
 import { marked } from "marked";
 import {
   ReadingLinkNavigation,
@@ -30,7 +31,7 @@ import { ChatCitationNavigation, remarkChatCitations } from "./citations";
 
 const Code = lazy(() => import("./CodeBlock"));
 const MathFormula = lazy(() => import("./MathFormula"));
-const plugins = [remarkGfm, remarkMath, remarkLatex];
+const plugins = [remarkGfm, remarkMath, remarkLatex, remarkCJKStrong];
 export const safeMarkdownURL = (url: string) =>
   /^(https?:\/\/|mailto:|#)/i.test(url)
     ? url.replace(/(?:[。，；！？]|%E3%80%82|%EF%BC%8C)+$/gi, "")

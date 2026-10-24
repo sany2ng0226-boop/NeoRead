@@ -14,6 +14,22 @@ function render(content: string, generating = false) {
   );
 }
 describe("Markdown received source vs display", () => {
+  it("renders punctuation-final Chinese bold without changing code or escaped text", () => {
+    const dom = new JSDOM(
+      render(
+        "**我的推断：**这次转向\n\n`**代码。**原样`\n\n\\*\\*文字。\\*\\*原样",
+      ),
+    );
+    expect(dom.window.document.querySelector("strong")?.textContent).toBe(
+      "我的推断：",
+    );
+    expect(dom.window.document.querySelectorAll("strong")).toHaveLength(1);
+    expect(dom.window.document.querySelector("code")?.textContent).toBe(
+      "**代码。**原样",
+    );
+    expect(dom.window.document.body.textContent).toContain("**文字。**原样");
+    dom.window.close();
+  });
   it("renders external links as navigable anchors", () => {
     const dom = new JSDOM(render("[项目](https://example.com)"));
     const link = dom.window.document.querySelector<HTMLAnchorElement>("a");
