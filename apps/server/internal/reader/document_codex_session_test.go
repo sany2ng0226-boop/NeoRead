@@ -2,7 +2,9 @@ package reader
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +29,7 @@ func runPersistentDocumentProcess() {
 	file := filepath.Join(work, "native-state.json")
 	thread := "thread-" + filepath.Base(work)
 	type nativeState struct {
+		Thread   string
 		Turn     int
 		Head     int
 		Remember string
@@ -39,6 +42,9 @@ func runPersistentDocumentProcess() {
 		return state
 	}
 	save := func(state nativeState) { _ = os.WriteFile(file, []byte(jsonText(state)), 0600) }
+	if saved := load(); saved.Thread != "" {
+		thread = saved.Thread
+	}
 	for scan.Scan() {
 		var r codexRPCMessage
 		if json.Unmarshal(scan.Bytes(), &r) != nil {
@@ -73,6 +79,26 @@ func runPersistentDocumentProcess() {
 			if p.Thread != thread {
 				os.Exit(4)
 			}
+			if mode := os.Getenv("READER_RESUME_ERROR"); mode != "" && !strings.HasSuffix(thread, "-fork") {
+				code, message := -32600, "thread already has an active writer"
+				if mode == "other" {
+					code, message = -32000, "provider authentication failed"
+				}
+				_ = enc.Encode(map[string]any{"id": r.ID, "error": map[string]any{"code": code, "message": message}})
+				continue
+			}
+			reply(map[string]any{"thread": map[string]any{"id": thread}, "model": "test"})
+		case "thread/fork":
+			var p struct {
+				Last string `json:"lastTurnId"`
+			}
+			_ = json.Unmarshal(r.Params, &p)
+			state := load()
+			checkpoint, _ := strconv.Atoi(strings.TrimPrefix(p.Last, "turn-"))
+			state.Head, state.Turn = checkpoint, checkpoint
+			thread += "-fork"
+			state.Thread = thread
+			save(state)
 			reply(map[string]any{"thread": map[string]any{"id": thread}, "model": "test"})
 		case "thread/turns/list":
 			state := load()
@@ -242,5 +268,143 @@ func TestCodexConversationRetainsThreadAndSources(t *testing.T) {
 	_ = s.Store.DB.QueryRow("SELECT count(*) FROM messages WHERE document_id='doc'").Scan(&messages)
 	if messages != 32 {
 		t.Fatal("history or failed-turn boundary lost", messages)
+	}
+}
+
+func TestCodexWriterConflictRecovery(t *testing.T) {
+	for _, mode := range []string{"busy", "busy-interrupted", "busy-legacy-interrupted", "other", "missing-checkpoint", "save-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			s, a := prepareConversationFixture(t)
+			fakeAgent(t, "codex", "document-conversation")
+			capture := filepath.Join(t.TempDir(), "capture.jsonl")
+			t.Setenv("READER_CONVERSATION_CAPTURE", capture)
+			t.Setenv("READER_DOCUMENT_TEST_BLOCK", a.corpus.Passages[1].ID)
+			first := conversationRequest(t, s, "codex", "记住 CIVET-42")
+			if !strings.Contains(first.Body.String(), "event: done") {
+				t.Fatal(first.Body.String())
+			}
+			c, err := s.Store.documentConversation(context.Background(), "doc", "codex", "codex-native-v1")
+			if err != nil || c.NativeThread == "" || c.NativeCommitted == "" {
+				t.Fatal(c, err)
+			}
+			original := c.NativeThread
+			interrupted := strings.HasSuffix(mode, "interrupted")
+			success := strings.HasPrefix(mode, "busy")
+			if interrupted {
+				failed := conversationRequest(t, s, "codex", "cancel-test")
+				if strings.Contains(failed.Body.String(), "event: done") {
+					t.Fatal("failed turn committed")
+				}
+				c, err = s.Store.documentConversation(context.Background(), "doc", "codex", "codex-native-v1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "busy-legacy-interrupted" {
+					c.NativeCommittedUsage = nil
+					if err = saveDocumentConversation(context.Background(), s.Store.DB, "doc", "codex", c); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			s.Close()
+			s = NewServer(s.Store, "test-secret", "")
+			t.Cleanup(s.Close)
+			t.Setenv("READER_RESUME_ERROR", "busy")
+			switch mode {
+			case "other":
+				t.Setenv("READER_RESUME_ERROR", "other")
+			case "missing-checkpoint":
+				c.NativeCommitted = ""
+				if err := saveDocumentConversation(context.Background(), s.Store.DB, "doc", "codex", c); err != nil {
+					t.Fatal(err)
+				}
+			case "save-failure":
+				_, err = s.Store.DB.Exec(`CREATE TRIGGER fail_branch_save BEFORE UPDATE ON document_conversations BEGIN SELECT RAISE(ABORT,'save failed'); END`)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			second := conversationRequest(t, s, "codex", "接着上次解释")
+			ok := strings.Contains(second.Body.String(), "event: done")
+			if ok != success {
+				t.Fatal(second.Body.String())
+			}
+			saved, err := s.Store.documentConversation(context.Background(), "doc", "codex", "codex-native-v1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if success {
+				report, e := s.Store.scopedUsageReport("doc", true)
+				if e != nil || len(report.Calls) == 0 {
+					t.Fatal(report, e)
+				}
+				last := report.Calls[len(report.Calls)-1]
+				if len(last.Models) != 1 {
+					t.Fatal(last)
+				}
+				if mode == "busy-legacy-interrupted" {
+					if last.Models[0].Tokens != nil {
+						t.Fatal("invented usage for unknown legacy baseline", last)
+					}
+				} else if last.Models[0].Tokens == nil || last.Models[0].Tokens.TotalTokens != 30 {
+					t.Fatal("inherited usage counted again", last)
+				}
+				if saved.NativeThread == original || saved.NativeForkedFrom != original || !strings.Contains(second.Body.String(), "CIVET-42") {
+					t.Fatal("lost history or lineage", saved, second.Body.String())
+				}
+				s.Close()
+				s = NewServer(s.Store, "test-secret", "")
+				t.Cleanup(s.Close)
+				third := conversationRequest(t, s, "codex", "再接着解释")
+				if !strings.Contains(third.Body.String(), "event: done") || !strings.Contains(third.Body.String(), "CIVET-42") {
+					t.Fatal(third.Body.String())
+				}
+			} else if saved.NativeThread != original {
+				t.Fatal("failed recovery changed saved mapping", saved)
+			}
+			raw, _ := os.ReadFile(capture)
+			forks, turns := 0, 0
+			for _, line := range strings.Split(string(raw), "\n") {
+				var event struct {
+					Method string
+					Params map[string]any
+				}
+				_ = json.Unmarshal([]byte(line), &event)
+				switch event.Method {
+				case "thread/fork":
+					forks++
+					if event.Params["threadId"] != original || event.Params["lastTurnId"] != c.NativeCommitted || event.Params["config"] == nil || event.Params["approvalPolicy"] != "never" || event.Params["sandbox"] != "read-only" {
+						t.Fatal("unsafe fork", event)
+					}
+				case "thread/revert":
+					t.Fatal("must not revert an externally owned thread")
+				case "turn/start":
+					turns++
+				}
+			}
+			wantForks, wantTurns := 0, 1
+			if success {
+				wantForks, wantTurns = 1, 3
+			}
+			if mode == "save-failure" {
+				wantForks = 1
+			}
+			if interrupted {
+				wantTurns++
+			}
+			if forks != wantForks || turns != wantTurns {
+				t.Fatal(forks, turns)
+			}
+		})
+	}
+}
+
+func TestCodexRPCErrorPrivacy(t *testing.T) {
+	busy := &codexRPCError{Code: -32600, Message: "thread secret already has an active writer"}
+	if !isCodexWriterConflict(busy) || !errors.Is(busy, errCodexRPCResponse) || strings.Contains(busy.Error(), "secret") {
+		t.Fatal("classification or privacy boundary")
+	}
+	if isCodexWriterConflict(&codexRPCError{Code: -32000, Message: busy.Message}) {
+		t.Fatal("unrelated error classified as writer conflict")
 	}
 }

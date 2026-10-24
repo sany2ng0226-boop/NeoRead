@@ -13,24 +13,27 @@ import (
 // Codex; Messages is the active, possibly compacted Chat Completions window.
 // The UI transcript and per-turn protocol events remain in messages/agent_runs.
 type documentConversation struct {
-	PiEntries       json.RawMessage         `json:"piEntries,omitempty"`
-	SeenSources     map[string]bool         `json:"seenSources,omitempty"`
-	ID              string                  `json:"id"`
-	ConnectionKey   string                  `json:"connectionKey"`
-	LastMessageID   string                  `json:"lastMessageId"`
-	Revision        string                  `json:"corpusRevision"`
-	PassageCount    int                     `json:"passageCount"`
-	SourceOffset    int                     `json:"sourceOffset"`
-	ReadBlocks      []string                `json:"readBlocks,omitempty"`
-	ReadPages       []documentPageImage     `json:"readPages,omitempty"`
-	OverviewVersion string                  `json:"overviewVersion,omitempty"`
-	Messages        []toolCompletionMessage `json:"messages,omitempty"`
-	Compactions     int                     `json:"compactions"`
-	NativeThread    string                  `json:"nativeThread,omitempty"`
-	NativePending   string                  `json:"nativePendingTurn,omitempty"`
-	NativeCommitted string                  `json:"nativeCommittedTurn,omitempty"`
-	NativeDirty     bool                    `json:"nativeDirty"`
-	NativeUsage     *TokenCounts            `json:"nativeUsage,omitempty"`
+	PiEntries            json.RawMessage         `json:"piEntries,omitempty"`
+	SeenSources          map[string]bool         `json:"seenSources,omitempty"`
+	ID                   string                  `json:"id"`
+	ConnectionKey        string                  `json:"connectionKey"`
+	LastMessageID        string                  `json:"lastMessageId"`
+	Revision             string                  `json:"corpusRevision"`
+	PassageCount         int                     `json:"passageCount"`
+	SourceOffset         int                     `json:"sourceOffset"`
+	ReadBlocks           []string                `json:"readBlocks,omitempty"`
+	ReadPages            []documentPageImage     `json:"readPages,omitempty"`
+	OverviewVersion      string                  `json:"overviewVersion,omitempty"`
+	Messages             []toolCompletionMessage `json:"messages,omitempty"`
+	Compactions          int                     `json:"compactions"`
+	NativeCommittedUsage *TokenCounts            `json:"nativeCommittedUsage,omitempty"`
+	NativeUsageUnknown   bool                    `json:"nativeUsageUnknown,omitempty"`
+	NativeForkedFrom     string                  `json:"nativeForkedFrom,omitempty"`
+	NativeThread         string                  `json:"nativeThread,omitempty"`
+	NativePending        string                  `json:"nativePendingTurn,omitempty"`
+	NativeCommitted      string                  `json:"nativeCommittedTurn,omitempty"`
+	NativeDirty          bool                    `json:"nativeDirty"`
+	NativeUsage          *TokenCounts            `json:"nativeUsage,omitempty"`
 }
 
 func (s *Store) documentConversation(ctx context.Context, documentID, provider, key string) (documentConversation, error) {

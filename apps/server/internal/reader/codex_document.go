@@ -23,7 +23,7 @@ func (s *codexSession) control(ctx context.Context, method string, params any) (
 	life := newRPCLifecycle(ctx, s.cmd, s.stdin, s.stdout)
 	defer life.finish()
 	result, err := s.callRPC(ctx, life, method, params, denyCodexClientRequest(life))
-	if errors.Is(err, errCodexRPCResponse) {
+	if errors.Is(err, errCodexRPCResponse) && !isCodexWriterConflict(err) {
 		return nil, generationError(ErrorCapability, "当前 Codex 版本不支持文档工具隔离")
 	}
 	return result, err
@@ -248,6 +248,7 @@ func streamCodexDocumentChat(ctx context.Context, root, model string, in AIInput
 		progress.NativePending = a.conversation.NativePending
 		progress.NativeDirty = a.conversation.NativeDirty
 		progress.NativeUsage = a.conversation.NativeUsage
+		progress.NativeUsageUnknown = a.conversation.NativeUsageUnknown
 		return saveDocumentConversation(ctx, a.server.Store.DB, a.corpus.DocumentID, a.conversationProvider(), progress)
 	}
 	a.conversation.NativeDirty = true
@@ -294,6 +295,9 @@ func streamCodexDocumentChat(ctx context.Context, root, model string, in AIInput
 		return GenerateResult{}, err
 	}
 	a.conversation.NativeCommitted = session.lastTurnID
+	a.conversation.NativeCommittedUsage = session.total
+	a.conversation.NativeUsageUnknown = false
+	session.unknownUsageBaseline = false
 	a.conversation.NativeUsage = session.total
 	healthy = true
 	return a.finishDocumentAnswer(ctx, result, emit)

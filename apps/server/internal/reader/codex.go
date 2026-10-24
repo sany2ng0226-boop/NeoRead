@@ -23,6 +23,7 @@ type codexSession struct {
 	serial                             int
 	total                              *TokenCounts
 	usageComplete                      bool
+	unknownUsageBaseline               bool
 	completedTurns                     map[string]bool
 	closeOnce                          sync.Once
 	initialized                        bool
@@ -216,7 +217,7 @@ func (s *codexSession) generate(ctx context.Context, in AIInput, delta func(stri
 					}
 				}
 				total := codexTokens(usage.TokenUsage.Total)
-				if counts := codexUsageDelta(total, previousTotal); counts != nil && codexUsageDelta(total, s.total) != nil {
+				if counts := codexUsageDelta(total, previousTotal); !s.unknownUsageBaseline && counts != nil && codexUsageDelta(total, s.total) != nil {
 					usageReceived = true
 					s.total = total
 					emitMetrics(metrics, []ModelTokens{{Tokens: counts}})
@@ -437,6 +438,19 @@ type codexRPCMessage struct {
 
 var errCodexRPCResponse = errors.New("Codex RPC request failed")
 
+type codexRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// Keep provider details private while allowing recovery of a known ownership conflict.
+func (e *codexRPCError) Error() string        { return errCodexRPCResponse.Error() }
+func (e *codexRPCError) Is(target error) bool { return target == errCodexRPCResponse }
+func isCodexWriterConflict(err error) bool {
+	var response *codexRPCError
+	return errors.As(err, &response) && response.Code == -32600 && strings.Contains(response.Message, "already has an active writer")
+}
+
 func (s *codexSession) readRPCMessage(ctx context.Context) (codexRPCMessage, error) {
 	var msg codexRPCMessage
 	if !s.scan.Scan() {
@@ -470,6 +484,10 @@ func (s *codexSession) callRPC(ctx context.Context, life *rpcLifecycle, method s
 		var responseID int
 		if msg.Method == "" && json.Unmarshal(msg.ID, &responseID) == nil && responseID == serial {
 			if len(msg.Error) > 0 && string(msg.Error) != "null" {
+				var response codexRPCError
+				if json.Unmarshal(msg.Error, &response) == nil {
+					return nil, &response
+				}
 				return nil, errCodexRPCResponse
 			}
 			return msg.Result, nil

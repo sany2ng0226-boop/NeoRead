@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -105,26 +106,75 @@ func (c *documentCodexCache) acquire(ctx context.Context, a *documentAgent, root
 	session.finalMessagesOnly = true
 	session.baseInstructions = documentReadingInstructions
 	if state.NativeThread != "" {
-		if err = session.resumeDocument(ctx, state.NativeThread); err != nil {
+		err = session.resumeDocument(ctx, state.NativeThread)
+		forked := isCodexWriterConflict(err)
+		if forked {
+			err = session.forkDocument(ctx, state.NativeThread, state.NativeCommitted)
+			if err == nil {
+				progress := a.committedConversation
+				progress.NativeForkedFrom = state.NativeThread
+				progress.NativeThread = session.threadID
+				progress.NativePending = ""
+				progress.NativeDirty = false
+				progress.NativeUsage = state.NativeCommittedUsage
+				if progress.NativeUsage == nil && !state.NativeDirty && !state.NativeUsageUnknown {
+					progress.NativeUsage = state.NativeUsage
+				}
+				// Older interrupted records have no committed counter; report unknown rather than charge inherited tokens again.
+				progress.NativeUsageUnknown = progress.NativeUsage == nil
+				// Save the replacement before generation so a retry reuses this branch.
+				err = saveDocumentConversation(ctx, a.server.Store.DB, a.corpus.DocumentID, a.conversationProvider(), progress)
+				if err == nil {
+					a.committedConversation = progress
+					state.NativeForkedFrom = progress.NativeForkedFrom
+					state.NativeThread = progress.NativeThread
+					state.NativePending = ""
+					state.NativeDirty = false
+					state.NativeUsage = progress.NativeUsage
+					state.NativeUsageUnknown = progress.NativeUsageUnknown
+					if a.activity != nil {
+						err = a.activity("reading", "", "原会话正在其他窗口使用，已从上次保存的回答独立接续")
+					}
+				}
+			}
+		}
+		if err != nil {
 			session.close()
 			closeMCP()
 			return nil, err
 		}
 		session.total = state.NativeUsage
+		session.unknownUsageBaseline = state.NativeUsageUnknown
 	}
 	e := &documentCodexEntry{document: a.corpus.DocumentID, key: key, active: true, session: session, binding: binding, stopMCP: closeMCP}
 	c.entry = e
 	return e, nil
 }
 func (s *codexSession) resumeDocument(ctx context.Context, threadID string) error {
+	return s.loadDocumentThread(ctx, "thread/resume", threadID, "")
+}
+func (s *codexSession) forkDocument(ctx context.Context, threadID, committed string) error {
+	if strings.TrimSpace(committed) == "" {
+		return generationError(ErrorProtocol, "原会话正在其他窗口使用，但缺少已保存的回答位置，历史已保留")
+	}
+	return s.loadDocumentThread(ctx, "thread/fork", threadID, committed)
+}
+func (s *codexSession) loadDocumentThread(ctx context.Context, method, threadID, committed string) error {
 	params := map[string]any{"threadId": threadID, "excludeTurns": true, "cwd": s.work, "approvalPolicy": "never", "sandbox": "read-only", "baseInstructions": documentReadingInstructions}
 	if s.model != "" {
 		params["model"] = s.model
 	}
 	// Re-bind the same owned tools after a process restart; do not resume old MCP URLs.
 	params["config"] = s.configOverrides
-	raw, err := s.control(ctx, "thread/resume", params)
+	if method == "thread/fork" {
+		params["lastTurnId"] = committed
+		params["ephemeral"] = false
+	}
+	raw, err := s.control(ctx, method, params)
 	if err != nil {
+		if method == "thread/resume" && isCodexWriterConflict(err) {
+			return err
+		}
 		return generationError(ErrorProtocol, "无法恢复 Codex 阅读会话，历史已保留，请重试")
 	}
 	var result struct {
@@ -133,15 +183,17 @@ func (s *codexSession) resumeDocument(ctx context.Context, threadID string) erro
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	if json.Unmarshal(raw, &result) != nil || result.Thread.ID != threadID {
+	if json.Unmarshal(raw, &result) != nil || strings.TrimSpace(result.Thread.ID) == "" ||
+		(method == "thread/resume" && result.Thread.ID != threadID) ||
+		(method == "thread/fork" && result.Thread.ID == threadID) {
 		return generationError(ErrorProtocol, "Codex 恢复了不匹配的会话")
 	}
-	s.threadID = threadID
+	s.threadID = result.Thread.ID
 	s.actualModel = result.Model
 	if _, err = s.verifyDocumentConfig(ctx); err != nil {
 		return err
 	}
-	raw, err = s.control(ctx, "mcpServerStatus/list", map[string]any{"threadId": threadID, "limit": 100, "detail": "toolsAndAuthOnly"})
+	raw, err = s.control(ctx, "mcpServerStatus/list", map[string]any{"threadId": s.threadID, "limit": 100, "detail": "toolsAndAuthOnly"})
 	if err != nil || !validDocumentMCPStatus(raw, s.documentMCPName) {
 		return generationError(ErrorCapability, "恢复后的文档工具范围无效")
 	}
